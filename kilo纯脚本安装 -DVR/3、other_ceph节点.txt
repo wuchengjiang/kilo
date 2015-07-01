@@ -1,0 +1,42 @@
+
+
+ntpdate 192.168.102.1
+
+yum install openstack-selinux -y 
+
+yum install openstack-utils  -y
+
+yum install ceph-deploy ceph python-ceph ceph-radosgw radosgw-agent  nodejs-argparse redhat-lsb xfsdump qemu-kvm qemu-kvm-tools qemu-img qemu-guest-agent  libvirt httpd  mod_ssl openssl python-boto -y
+scp 192.168.102.8:/etc/ceph/* /etc/ceph
+
+
+hostname=`hostname`
+mkdir -p /var/lib/ceph/mon/ceph-$hostname
+ceph-mon --mkfs -i $hostname  --keyring /etc/ceph/ceph.mon.keyring
+touch /var/lib/ceph/mon/ceph-$hostname/done
+touch /var/lib/ceph/mon/ceph-$hostname/sysvinit
+/sbin/service ceph -c /etc/ceph/ceph.conf start mon.$hostname
+chkconfig ceph on
+
+
+ceph_disk=`lsblk -ln | awk '{if ($6 == "disk" && $1!="sda" ) print $1}'`
+for j in $ceph_disk
+do 
+
+   osd_id=`ceph osd create`
+   mkdir -p /var/lib/ceph/osd/ceph-$osd_id
+   mkfs.xfs -f /dev/$j
+   sleep 5
+   mount /dev/$j /var/lib/ceph/osd/ceph-$osd_id
+   mount -o remount,user_xattr /var/lib/ceph/osd/ceph-$osd_id
+
+   echo '/dev/$j /var/lib/ceph/osd/ceph-$osd_id xfs defaults 0 0' >> /etc/fstab
+   echo '/dev/$j /var/lib/ceph/osd/ceph-$osd_id xfs remount,user_xattr  0 0' >> /etc/fstab
+
+   ceph-osd -i $osd_id --mkfs --mkkey 
+   ceph auth add osd.$osd_id osd 'allow *' mon 'allow profile osd' -i /var/lib/ceph/osd/ceph-$osd_id/keyring
+   touch /var/lib/ceph/osd/ceph-$osd_id/sysvinit
+   /etc/init.d/ceph start osd.$osd_id
+   sleep 5         
+done
+chkconfig ceph on

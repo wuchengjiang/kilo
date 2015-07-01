@@ -1,0 +1,54 @@
+1、控制节点
+openstack-config --set /etc/neutron/neutron.conf DEFAULT router_distributed  True
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 mechanism_drivers openvswitch,l2population
+
+systemctl restart neutron-server.service
+
+
+2、网络节点
+
+DVR配置
+openstack-config --set /etc/neutron/neutron.conf DEFAULT router_distributed  True
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT agent_mode dvr_snat
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 mechanism_drivers openvswitch,l2population
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini agent enable_distributed_routing  True
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini agent l2_population  True  
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini agent arp_responder True  
+
+systemctl restart neutron-openvswitch-agent.service neutron-l3-agent.service  neutron-metadata-agent.service 
+
+
+3、计算节点
+DVR配置
+openstack-config --set /etc/neutron/neutron.conf DEFAULT router_distributed  True
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT agent_mode dvr
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ml2 mechanism_drivers openvswitch,l2population
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini agent enable_distributed_routing  True
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini agent l2_population  True  
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini agent arp_responder True  
+
+
+
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT interface_driver neutron.agent.linux.interface.OVSInterfaceDriver
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT external_network_bridge br-ex
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT router_delete_namespaces True
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT verbose True
+
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT auth_uri http://192.168.102.1:5000
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT auth_url http://192.168.102.1:35357
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT auth_region RegionOne
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT auth_plugin password
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT project_domain_id default
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT user_domain_id  default
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT project_name service
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT username neutron
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT password neutron
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT nova_metadata_ip  192.168.102.1
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT metadata_proxy_shared_secret hscloud
+openstack-config --set  /etc/neutron/metadata_agent.ini DEFAULT verbose True
+
+public_interface=`ifconfig | awk -F: '/flags/{print $1}'| sed -n 2p`
+ovs-vsctl add-br br-ex
+ovs-vsctl add-port br-ex  $public_interface
+
+systemctl restart neutron-openvswitch-agent.service neutron-l3-agent.service  neutron-metadata-agent.service 

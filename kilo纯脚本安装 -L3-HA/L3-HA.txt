@@ -1,0 +1,19 @@
+1、控制节点
+
+L3 HA配置
+yum install keepalived
+
+
+openstack-config --set /etc/neutron/neutron.conf DEFAULT router_distributed  False
+openstack-config --set /etc/neutron/neutron.conf DEFAULT l3_ha True
+openstack-config --set /etc/neutron/neutron.conf DEFAULT max_l3_agents_per_router  2
+
+systemctl restart neutron-server.service
+
+2、网络节点
+
+openstack-config --set /etc/neutron/l3_agent.ini DEFAULT agent_mode legacy
+
+
+systemctl restart  neutron-l3-agent.service  
+

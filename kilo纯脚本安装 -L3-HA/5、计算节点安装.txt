@@ -1,0 +1,210 @@
+
+yum install ceph-deploy ceph python-ceph ceph-radosgw radosgw-agent  nodejs-argparse redhat-lsb xfsdump qemu-kvm qemu-kvm-tools qemu-img qemu-guest-agent  libvirt httpd  mod_ssl openssl python-boto -y
+
+scp 192.168.102.8:/etc/ceph/* /etc/ceph
+
+ntpdate 192.168.102.1
+
+yum install openstack-selinux -y 
+
+yum install openstack-utils  -y
+
+
+yum install openstack-nova-compute sysfsutils -y 
+
+sed -i 's/#listen_tls = 0/listen_tls = 0/g' /etc/libvirt/libvirtd.conf
+sed -i 's/#listen_tcp = 1/listen_tcp = 1/g' /etc/libvirt/libvirtd.conf
+sed -i '$a\auth_tcp="none"' /etc/libvirt/libvirtd.conf
+sed -i 's/env libvirtd_opts="-d "/env libvirtd_opts="-d -l"/g' /etc/init.d/libvirtd
+sed -i 's/#vnc_listen = 0.0.0/vnc_listen = 0.0.0' /etc/libvirt/qemu.conf
+sed -i 's/#user = "root"/user = "root"/g' /etc/libvirt/qemu.conf
+sed -i 's/#group = "root"/group = "root"/g' /etc/libvirt/qemu.conf
+sed -i 's/#LIBVIRTD_ARGS/LIBVIRTD_ARGS/' /etc/sysconfig/libvirtd
+
+
+systemctl enable libvirtd.service 
+systemctl start libvirtd.service 
+
+ip_address=`ifconfig |awk '{if ($1 =="inet" && $5=="broadcast") print $2}' |sed -n 1p`
+openstack-config --set /etc/nova/nova.conf database connection mysql://nova:nova@192.168.102.1/nova
+openstack-config --set /etc/nova/nova.conf DEFAULT rpc_backend rabbit
+openstack-config --set /etc/nova/nova.conf oslo_messaging_rabbit rabbit_host 192.168.102.1
+openstack-config --set /etc/nova/nova.conf oslo_messaging_rabbit rabbit_userid guest
+openstack-config --set /etc/nova/nova.conf oslo_messaging_rabbit rabbit_password hscloud
+
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_uri http://192.168.102.1:5000
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_url http://192.168.102.1:35357
+openstack-config --set /etc/nova/nova.conf keystone_authtoken auth_plugin password
+openstack-config --set /etc/nova/nova.conf keystone_authtoken project_domain_id default
+openstack-config --set /etc/nova/nova.conf keystone_authtoken user_domain_id default
+openstack-config --set /etc/nova/nova.conf keystone_authtoken project_name service
+openstack-config --set /etc/nova/nova.conf keystone_authtoken username nova
+openstack-config --set /etc/nova/nova.conf keystone_authtoken password nova
+openstack-config --set /etc/nova/nova.conf glance host 192.168.102.1  
+openstack-config --set /etc/nova/nova.conf oslo_concurrency lock_path /var/lock/nova
+
+openstack-config --set /etc/nova/nova.conf DEFAULT auth_strategy keystone
+openstack-config --set /etc/nova/nova.conf DEFAULT my_ip ${ip_address}
+openstack-config --set /etc/nova/nova.conf DEFAULT vnc_enabled  True
+openstack-config --set /etc/nova/nova.conf DEFAULT vncserver_listen  0.0.0.0
+openstack-config --set /etc/nova/nova.conf DEFAULT vncserver_proxyclient_address  ${ip_address}
+openstack-config --set /etc/nova/nova.conf DEFAULT novncproxy_base_url http://192.168.102.1:6080/vnc_auto.html
+openstack-config --set /etc/nova/nova.conf DEFAULT verbose True 
+openstack-config --set /etc/nova/nova.conf DEFAULT notification_driver ceilometer.compute.nova_notifier
+openstack-config --set /etc/nova/nova.conf DEFAULT notification_driver nova.openstack.common.notifier.rpc_notifier
+openstack-config --set /etc/nova/nova.conf DEFAULT notify_on_state_change vm_and_task_state
+openstack-config --set /etc/nova/nova.conf DEFAULT notify_api_faults False
+openstack-config --set /etc/nova/nova.conf DEFAULT report_interval 60
+openstack-config --set /etc/nova/nova.conf DEFAULT service_down_time 180
+openstack-config --set /etc/nova/nova.conf DEFAULT instance_usage_audit_period hour
+openstack-config --set /etc/nova/nova.conf DEFAULT allow_resize_to_same_host True
+openstack-config --set /etc/nova/nova.conf DEFAULT instance_usage_audit True
+openstack-config --set /etc/nova/nova.conf DEFAULT resume_guests_state_on_host_boot True
+openstack-config --set /etc/nova/nova.conf DEFAULT compute_driver libvirt.LibvirtDriver
+openstack-config --set /etc/nova/nova.conf DEFAULT use_cow_images True
+openstack-config --set /etc/nova/nova.conf DEFAULT vif_plugging_is_fatal False
+openstack-config --set /etc/nova/nova.conf DEFAULT vif_plugging_timeout 0
+openstack-config --set /etc/nova/nova.conf DEFAULT block_device_allocate_retries_interval 3
+openstack-config --set /etc/nova/nova.conf DEFAULT image_service nova.image.glance.GlanceImageService
+openstack-config --set /etc/nova/nova.conf DEFAULT block_device_allocate_retries 300
+openstack-config --set /etc/nova/nova.conf DEFAULT connection_type libvirt
+
+ceph_uuid=`ceph fsid`
+chmod 777 /etc/ceph/ceph.client.compute.keyring
+chmod 777 /etc/ceph/ceph.client.compute.keyring
+cd /etc/libvirt/
+cat > secret.xml <<EOF
+<secret ephemeral='no' private='no'>
+   <uuid>$ceph_uuid</uuid>
+   <usage type='ceph'>
+     <name>client.compute secret</name>
+   </usage>
+</secret>
+EOF
+virsh secret-define --file secret.xml
+compute_keyring=`cat /etc/ceph/ceph.client.compute.keyring | grep key | awk '{print $3}'`
+virsh secret-set-value --secret  $ceph_uuid --base64 $compute_keyring
+
+rm -rf secret.xml
+cd
+
+openstack-config --set /etc/nova/nova.conf libvirt live_migration_flag VIR_MIGRATE_UNDEFINE_SOURCE,VIR_MIGRATE_PEER2PEER,VIR_MIGRATE_LIVE,VIR_MIGRATE_PERSIST_DEST
+openstack-config --set /etc/nova/nova.conf libvirt vif_driver nova.virt.libvirt.vif.LibvirtGenericVIFDriver
+openstack-config --set /etc/nova/nova.conf libvirt cpu_mode host-model
+openstack-config --set /etc/nova/nova.conf libvirt disk_cachemodes "network=writeback,block=none"
+openstack-config --set /etc/nova/nova.conf libvirt images_type rbd
+openstack-config --set /etc/nova/nova.conf libvirt images_rbd_pool compute
+openstack-config --set /etc/nova/nova.conf libvirt rbd_user compute
+openstack-config --set /etc/nova/nova.conf libvirt rbd_secret_uuid $ceph_uuid
+openstack-config --set /etc/nova/nova.conf libvirt images_rbd_ceph_conf /etc/ceph/ceph.conf
+openstack-config --set /etc/nova/nova.conf libvirt virt_type kvm
+openstack-config --set /etc/nova/nova.conf libvirt inject_password false
+openstack-config --set /etc/nova/nova.conf libvirt inject_key false
+openstack-config --set /etc/nova/nova.conf libvirt inject_partition -2
+
+
+
+chown -R  nova:nova /var/lib/nova/
+
+systemctl enable openstack-nova-compute.service
+systemctl start  openstack-nova-compute.service
+
+
+echo "net.ipv4.conf.all.rp_filter=0 " >>/etc/sysctl.conf
+echo "net.ipv4.conf.default.rp_filter=0 " >>/etc/sysctl.conf
+sysctl -p
+
+yum install openstack-neutron openstack-neutron-ml2 openstack-neutron-openvswitch -y
+
+openstack-config --set /etc/neutron/neutron.conf DEFAULT rpc_backend rabbit
+openstack-config --set /etc/neutron/neutron.conf oslo_messaging_rabbit rabbit_host 192.168.102.1
+openstack-config --set /etc/neutron/neutron.conf oslo_messaging_rabbit rabbit_userid guest
+openstack-config --set /etc/neutron/neutron.conf oslo_messaging_rabbit rabbit_password hscloud
+openstack-config --set /etc/neutron/neutron.conf DEFAULT auth_strategy keystone
+openstack-config --set /etc/neutron/neutron.conf DEFAULT core_plugin ml2
+openstack-config --set /etc/neutron/neutron.conf DEFAULT service_plugins router
+openstack-config --set /etc/neutron/neutron.conf DEFAULT allow_overlapping_ips True
+openstack-config --set /etc/neutron/neutron.conf DEFAULT verbose True 
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_uri http://192.168.102.1:5000
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_url http://192.168.102.1:35357
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken auth_plugin password
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken project_domain_id default
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken user_domain_id default
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken project_name service
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken username neutron
+openstack-config --set /etc/neutron/neutron.conf keystone_authtoken password neutron
+
+
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini  ml2 type_drivers flat,vxlan
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini  ml2 tenant_network_types vxlan
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini  ml2 mechanism_drivers openvswitch
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini  ml2_type_vxlan vni_ranges 1:1000 
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini  securitygroup enable_security_group True
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini  securitygroup enable_ipset True
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini  securitygroup firewall_driver neutron.agent.linux.iptables_firewall.OVSHybridIptablesFirewallDriver
+
+
+tunnel_local_ip=`ifconfig |awk '{if ($1 =="inet" && $5=="broadcast") print $2}' |sed -n 1p`
+
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini ovs local_ip  ${tunnel_local_ip}
+openstack-config --set /etc/neutron/plugins/ml2/ml2_conf.ini agent tunnel_types vxlan
+
+
+systemctl enable openvswitch.service
+systemctl start openvswitch.service
+
+openstack-config --set /etc/nova/nova.conf DEFAULT network_api_class nova.network.neutronv2.api.API
+openstack-config --set /etc/nova/nova.conf DEFAULT security_group_api neutron
+openstack-config --set /etc/nova/nova.conf DEFAULT linuxnet_interface_driver nova.network.linux_net.LinuxOVSInterfaceDriver
+openstack-config --set /etc/nova/nova.conf DEFAULT firewall_driver nova.virt.firewall.NoopFirewallDriver
+openstack-config --set /etc/nova/nova.conf neutron url http://192.168.102.1:9696
+openstack-config --set /etc/nova/nova.conf neutron auth_strategy keystone
+openstack-config --set /etc/nova/nova.conf neutron admin_auth_url http://192.168.102.1:35357/v2.0
+openstack-config --set /etc/nova/nova.conf neutron admin_tenant_name service
+openstack-config --set /etc/nova/nova.conf neutron admin_username neutron
+openstack-config --set /etc/nova/nova.conf neutron admin_password  neutron
+openstack-config --set /etc/nova/nova.conf neutron linuxnet_ovs_integration_bridge br-int
+openstack-config --set /etc/nova/nova.conf neutron region_name RegionOne
+openstack-config --set /etc/nova/nova.conf neutron ovs_bridge br-int
+
+
+ln -s /etc/neutron/plugins/ml2/ml2_conf.ini /etc/neutron/plugin.ini
+cp /usr/lib/systemd/system/neutron-openvswitch-agent.service /usr/lib/systemd/system/neutron-openvswitch-agent.service.orig
+sed -i 's,plugins/openvswitch/ovs_neutron_plugin.ini,plugin.ini,g' /usr/lib/systemd/system/neutron-openvswitch-agent.service
+
+systemctl restart openstack-nova-compute.service
+
+systemctl enable neutron-openvswitch-agent.service
+systemctl start neutron-openvswitch-agent.service
+
+
+yum install openstack-ceilometer-compute python-ceilometerclient python-pecan -y
+openstack-config --set /etc/ceilometer/ceilometer.conf DEFAULT rpc_backend rabbit
+openstack-config --set /etc/ceilometer/ceilometer.conf oslo_messaging_rabbit rabbit_host 192.168.102.1
+openstack-config --set /etc/ceilometer/ceilometer.conf oslo_messaging_rabbit rabbit_userid guest
+openstack-config --set /etc/ceilometer/ceilometer.conf oslo_messaging_rabbit rabbit_password hscloud
+openstack-config --set /etc/ceilometer/ceilometer.conf DEFAULT verbose True
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken auth_uri http://192.168.102.1:5000
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken auth_url http://192.168.102.1:35357
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_tenant_name service
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_user  ceilometer
+openstack-config --set /etc/ceilometer/ceilometer.conf keystone_authtoken admin_password ceilometer
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_auth_url  http://192.168.102.1:5000/v2.0
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_username  ceilometer
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_tenant_name service
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_password  ceilometer
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_endpoint_type  internalURL
+openstack-config --set /etc/ceilometer/ceilometer.conf service_credentials os_region_name  RegionOne
+openstack-config --set /etc/ceilometer/ceilometer.conf  publisher telemetry_secret hscloud
+
+openstack-config --set /etc/nova/nova.conf DEFAULT  instance_usage_audit True
+openstack-config --set /etc/nova/nova.conf DEFAULT  instance_usage_audit_period  hour
+openstack-config --set /etc/nova/nova.conf DEFAULT  notify_on_state_change vm_and_task_state
+openstack-config --set /etc/nova/nova.conf DEFAULT  notification_driver messagingv2
+
+systemctl enable openstack-ceilometer-compute.service
+systemctl start openstack-ceilometer-compute.service
+systemctl restart openstack-nova-compute.service
+
+
+

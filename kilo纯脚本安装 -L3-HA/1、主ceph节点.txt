@@ -1,0 +1,91 @@
+
+yum install openstack-selinux -y 
+
+yum install openstack-utils  -y
+
+yum install ceph-deploy ceph python-ceph ceph-radosgw radosgw-agent  nodejs-argparse redhat-lsb xfsdump qemu-kvm qemu-kvm-tools qemu-img qemu-guest-agent  libvirt httpd  mod_ssl openssl python-boto -y
+
+
+hostname=`hostname`
+ip_address=`ifconfig |awk '{if ($1 =="inet" && $5=="broadcast") print $2}' |sed -n 1p`
+
+cat > /etc/ceph/ceph.conf << EOF
+[global]
+fsid = 00000000-0000-0000-0000-000000000001
+mon initial members = $hostname
+mon host = $ip_address
+public network = $ip_address/24
+auth cluster required = cephx
+auth service required = cephx
+auth client required = cephx
+filestore xattr use omap = true
+mds max file size = 102400000000000
+mds cache size = 102400
+osd journal size = 1024
+osd pool default size = 3
+osd pool default min_size = 1
+osd crush chooseleaf type = 1
+osd recovery threads  = 1     
+osd_mkfs_type = xfs
+
+[mon]
+mon clock drift allowed = .50 
+mon osd down out interval = 900
+
+EOF
+
+ceph-authtool --create-keyring /etc/ceph/ceph.mon.keyring --gen-key -n mon. --cap mon 'allow *' 
+ceph-authtool --create-keyring /etc/ceph/ceph.client.admin.keyring --gen-key -n client.admin --set-uid=0 --cap mon 'allow *' --cap osd 'allow *' --cap mds 'allow *'
+ceph-authtool /etc/ceph/ceph.mon.keyring --import-keyring /etc/ceph/ceph.client.admin.keyring 
+mkdir -p /var/lib/ceph/mon/ceph-$hostname
+mkdir -p /var/lib/ceph/bootstrap-osd/
+
+ceph-mon --mkfs -i $hostname --keyring /etc/ceph/ceph.mon.keyring
+touch /var/lib/ceph/mon/ceph-$hostname/done
+touch /var/lib/ceph/mon/ceph-$hostname/sysvinit
+/sbin/service ceph -c /etc/ceph/ceph.conf start mon.$hostname
+
+hostname=`hostname`
+mkdir -p /var/lib/ceph/mon/ceph-$hostname
+ceph-mon --mkfs -i $hostname  --keyring /etc/ceph/ceph.mon.keyring
+touch /var/lib/ceph/mon/ceph-$hostname/done
+touch /var/lib/ceph/mon/ceph-$hostname/sysvinit
+/sbin/service ceph -c /etc/ceph/ceph.conf start mon.$hostname
+chkconfig ceph on
+
+
+ceph_disk=`lsblk -ln | awk '{if ($6 == "disk" && $1!="sda" ) print $1}'`
+for j in $ceph_disk
+do 
+
+   osd_id=`ceph osd create`
+   mkdir -p /var/lib/ceph/osd/ceph-$osd_id
+   mkfs.xfs -f /dev/$j
+   sleep 5
+   mount /dev/$j /var/lib/ceph/osd/ceph-$osd_id
+   mount -o remount,user_xattr /var/lib/ceph/osd/ceph-$osd_id
+
+
+   echo "/dev/$j /var/lib/ceph/osd/ceph-$osd_id xfs defaults 0 0" >> /etc/fstab
+   echo "/dev/$j /var/lib/ceph/osd/ceph-$osd_id xfs remount,user_xattr  0 0" >> /etc/fstab
+
+   ceph-osd -i $osd_id --mkfs --mkkey 
+   ceph auth add osd.$osd_id osd 'allow *' mon 'allow profile osd' -i /var/lib/ceph/osd/ceph-$osd_id/keyring
+   touch /var/lib/ceph/osd/ceph-$osd_id/sysvinit
+   /etc/init.d/ceph start osd.$osd_id
+   sleep 5         
+done
+chkconfig ceph on
+
+ceph osd pool create images 256
+ceph osd pool create volumes 256
+ceph osd pool create compute 256
+ceph osd pool create backups 256
+
+ceph auth get-or-create client.images mon 'allow *' osd 'allow *' mds 'allow *' -o /etc/ceph/ceph.client.images.keyring
+ceph auth get-or-create client.volumes mon 'allow *' osd 'allow *' mds 'allow *' -o /etc/ceph/ceph.client.volumes.keyring
+ceph auth get-or-create client.compute mon 'allow *' osd 'allow *' mds 'allow *' -o /etc/ceph/ceph.client.compute.keyring
+ceph auth get-or-create client.backups mon 'allow *' osd 'allow *' mds 'allow *' -o /etc/ceph/ceph.client.backups.keyring
+
+
+
